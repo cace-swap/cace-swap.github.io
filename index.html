@@ -1,1 +1,282 @@
-Hello World !
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Context-Aware CodeLLM Eviction (CACE)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <meta name="description" content="CACE is a context-aware eviction policy for self-hosted CodeLLMs that reduces cold-start latency by up to 70% and improves cache hit rate by 55% compared to LRU.">
+
+  <meta property="og:title" content="Context-Aware CodeLLM Eviction (CACE)">
+  <meta property="og:description" content="CACE is a context-aware eviction policy for self-hosted CodeLLMs that reduces cold-start latency by up to 70% and improves cache hit rate by 55% compared to LRU.">
+  <meta property="og:type" content="website">
+
+  <!-- Adjust stylesheet path/name to match the template -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="page-container">
+
+    <!-- NAVBAR (optional simple anchor nav) -->
+    <header class="site-header">
+      <div class="site-header-inner">
+        <div class="logo-title">
+          <a href="#top">CACE</a>
+        </div>
+        <nav class="site-nav">
+          <a href="#abstract">Abstract</a>
+          <a href="#motivation">Motivation</a>
+          <a href="#method">Method</a>
+          <a href="#results">Results</a>
+          <a href="#ablation">Ablation</a>
+          <a href="#resources">Resources</a>
+          <a href="#bibtex">BibTeX</a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- HERO / TITLE SECTION -->
+    <main id="top" class="main-content">
+      <section class="hero-section">
+        <div class="hero-inner">
+          <h1 class="project-title">
+            Context-Aware CodeLLM Eviction (CACE)
+          </h1>
+          <p class="project-subtitle">
+            Reducing Cold-Start Latency for Self-Hosted CodeLLMs
+          </p>
+
+          <p class="project-authors">
+            <strong>Kishanthan Thangarajah</strong>,
+            Boyuan Chen,
+            Shi Chang,
+            Ahmed E. Hassan
+          </p>
+          <p class="project-institution">
+            Centre for Software Excellence, Huawei Canada
+          </p>
+
+          <div class="project-links">
+            <!-- Update href paths when you upload files -->
+            <a class="btn primary-btn" href="paper.pdf" target="_blank">📄 Paper (PDF)</a>
+            <a class="btn secondary-btn" href="CACE_ASE_Industry_2025_Slides-v7.0.pdf" target="_blank">🎞 Slides</a>
+            <a class="btn secondary-btn" href="#" target="_blank">💻 Code (coming soon)</a>
+          </div>
+
+          <ul class="project-tldr">
+            <li>Enterprises self-host many CodeLLMs under tight GPU budgets.</li>
+            <li>Standard LRU evicts the wrong models and triggers cold starts.</li>
+            <li>CACE uses context-aware scoring to keep the right models loaded.</li>
+            <li>Up to 70% lower TTFT, 37% lower E2E latency, and 55% higher hit rate vs. LRU.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ABSTRACT -->
+      <section id="abstract" class="section">
+        <div class="section-inner">
+          <h2>Abstract</h2>
+          <p>
+            Self-hosted CodeLLMs are increasingly used inside enterprises to support code completion,
+            refactoring, and reasoning across multiple languages and teams. However, GPU memory is
+            limited, and organizations often host many specialized models (per language and task),
+            which cannot all stay loaded at once. Existing systems typically rely on recency-based
+            (LRU) eviction, which ignores model load cost, task criticality, and future demand,
+            leading to frequent cold starts and poor developer experience.
+          </p>
+          <p>
+            We present <strong>CACE (Context-Aware CodeLLM Eviction)</strong>, a multi-factor eviction policy
+            that scores models using four signals: request recency, reload cost, predicted future
+            demand, and task criticality. CACE keeps latency-critical and soon-needed models resident,
+            reducing unnecessary reloads. Across multilingual completion (TTFT-sensitive) and reasoning
+            (E2E-sensitive) workloads, CACE cuts TTFT by up to <strong>70%</strong>, reduces E2E latency by up to
+            <strong>37%</strong>, increases cache hit rate to about <strong>0.86</strong> (≈ <strong>+55%</strong>), and roughly halves reload
+            overhead compared to LRU.
+          </p>
+        </div>
+      </section>
+
+      <!-- MOTIVATION / PROBLEM -->
+      <section id="motivation" class="section">
+        <div class="section-inner">
+          <h2>Motivation: Self-Hosting Many CodeLLMs on Limited GPUs</h2>
+
+          <h3>Language Diversity</h3>
+          <p>
+            Enterprise teams span front-end, back-end, DevOps, and automation, and rely on different
+            programming languages and tasks. To protect proprietary code and meet compliance
+            requirements (e.g., GDPR) while avoiding network latency from external APIs, many
+            organizations choose to <strong>self-host CodeLLMs</strong>.
+          </p>
+
+          <h3>Privacy and Latency Needs</h3>
+          <p>
+            Self-hosting keeps code and intellectual property within organizational boundaries,
+            simplifies compliance, and removes external round-trip latency, which is critical for
+            responsive IDE experiences. Developers expect sub-200&nbsp;ms feedback for code completions.
+          </p>
+
+          <h3>GPU Limitations → Cold Starts</h3>
+          <p>
+            In practice, enterprises need to host <strong>many specialized models</strong> (per language and task)
+            on a <strong>limited GPU budget</strong>. The serving system must continually load and unload models.
+            Naïve <strong>LRU-based eviction</strong> often evicts exactly the models that will be needed next.
+            Cold starts can take 2–3 seconds, disrupting IDE flow and harming developer productivity.
+          </p>
+
+          <h3>Why LRU is Not Enough</h3>
+          <ul>
+            <li>LRU considers only recency, treating all models as equal.</li>
+            <li>It ignores model load cost (e.g., 70B vs 1B parameters).</li>
+            <li>It is unaware of task latency sensitivity (TTFT vs reasoning E2E).</li>
+            <li>It cannot anticipate upcoming demand, causing unnecessary reloads.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- METHOD: CACE -->
+      <section id="method" class="section">
+        <div class="section-inner">
+          <h2>Method: Context-Aware CodeLLM Eviction (CACE)</h2>
+          <p>
+            CACE replaces recency-only eviction with a <strong>multi-factor scoring function</strong>.
+            Instead of blindly evicting the least recently used model, CACE computes an
+            eviction score per model and evicts the <em>least valuable</em> one.
+          </p>
+
+          <h3>Four Factors (P1–P4)</h3>
+          <ul>
+            <li><strong>P1 – Recency:</strong> how recently the model was used.</li>
+            <li><strong>P2 – Reload Cost:</strong> time and resources required to reload the model.</li>
+            <li><strong>P3 – Future Demand:</strong> predicted likelihood that the model will be needed soon.</li>
+            <li><strong>P4 – Task Criticality:</strong> how latency-sensitive the tasks using this model are.</li>
+          </ul>
+
+          <p>
+            Models with high eviction scores are poor candidates to keep in GPU memory.
+            CACE preferentially keeps models that are expensive to reload, frequently used,
+            or critical for latency-sensitive IDE interactions. In timeline-style workloads,
+            CACE produces fewer evictions than LRU and stabilizes model residency across time.
+          </p>
+
+          <!-- Optional figure: plug in when you add an image -->
+          <!--
+          <div class="figure">
+            <img src="static/images/cace_timeline.png" alt="LRU vs CACE evictions over time">
+            <p class="caption">
+              CACE performs fewer evictions than LRU by considering both past usage and predicted future demand,
+              maintaining stable model retention across time.
+            </p>
+          </div>
+          -->
+        </div>
+      </section>
+
+      <!-- RESULTS -->
+      <section id="results" class="section">
+        <div class="section-inner">
+          <h2>Results: Consistent Gains Across Workloads</h2>
+          <p>
+            We evaluate CACE on multilingual completion (TTFT-sensitive) and reasoning (E2E-sensitive)
+            tasks across eight popular programming languages and three realistic workload patterns:
+            a uniform mix, an IDE-heavy completion skew, and a popularity-skewed distribution.
+          </p>
+
+          <ul>
+            <li><strong>TTFT:</strong> up to <strong>70% lower</strong> than LRU for completion tasks.</li>
+            <li><strong>E2E latency:</strong> up to <strong>37% lower</strong> than LRU for reasoning tasks.</li>
+            <li><strong>Cache hit rate:</strong> improved by about <strong>55%</strong>, reaching ≈ <strong>0.86</strong>.</li>
+            <li><strong>Reload overhead:</strong> roughly <strong>halved</strong> compared to LRU.</li>
+          </ul>
+
+          <p>
+            These improvements hold across all evaluated workload patterns, indicating that CACE
+            is robust to different mixes of completion vs reasoning requests and language popularity
+            skews in real developer workflows.
+          </p>
+
+          <!-- Optional figure for summary results -->
+          <!--
+          <div class="figure">
+            <img src="static/images/cace_results.png" alt="CACE vs LRU performance across workloads">
+            <p class="caption">
+              CACE consistently outperforms LRU on TTFT, E2E latency, cache hit rate, and reload overhead across
+              all evaluated workloads.
+            </p>
+          </div>
+          -->
+        </div>
+      </section>
+
+      <!-- ABLATION -->
+      <section id="ablation" class="section">
+        <div class="section-inner">
+          <h2>Ablation: Which Eviction Factors Matter Most?</h2>
+          <p>
+            We ablate each component of CACE to understand its contribution to performance.
+          </p>
+          <ul>
+            <li>
+              <strong>P4 – Task Criticality</strong> has the largest impact on latency.
+              Removing it leads to substantial increases in P95 TTFT and reasoning E2E latency
+              and reduces cache hit rate.
+            </li>
+            <li>
+              <strong>P3 – Future Demand</strong> is the second most influential factor,
+              significantly improving cache hit rate and avoiding near-future cold starts.
+            </li>
+            <li>
+              <strong>P1 – Recency</strong> and <strong>P2 – Reload Cost</strong> provide smaller,
+              incremental gains by refining eviction choices.
+            </li>
+          </ul>
+          <p>
+            Overall, CACE’s gains are primarily driven by protecting latency-critical requests
+            and anticipating upcoming demand, with recency and reload cost providing additional fine-tuning.
+          </p>
+        </div>
+      </section>
+
+      <!-- RESOURCES -->
+      <section id="resources" class="section">
+        <div class="section-inner">
+          <h2>Resources</h2>
+          <ul>
+            <li>📄 <a href="paper.pdf" target="_blank">Paper (PDF)</a></li>
+            <li>🎞 <a href="CACE_ASE_Industry_2025_Slides-v7.0.pdf" target="_blank">ASE Industry Slides</a></li>
+            <li>💻 <a href="#" target="_blank">Code (coming soon)</a></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- BIBTEX -->
+      <section id="bibtex" class="section">
+        <div class="section-inner">
+          <h2>BibTeX</h2>
+          <pre><code>@inproceedings{thangarajah2025cace,
+  title     = {Context-Aware CodeLLM Eviction (CACE): Reducing Cold-Start Latency for Self-Hosted CodeLLMs},
+  author    = {Thangarajah, Kishanthan and Chen, Boyuan and Chang, Shi and Hassan, Ahmed E.},
+  booktitle = {Proceedings of the ASE 2025 Industry Track},
+  year      = {2025},
+  note      = {To appear}
+}</code></pre>
+        </div>
+      </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <p>
+          &copy; 2025 Kishanthan Thangarajah et al.
+          &middot;
+          Built using a modified <a href="https://github.com/eliahuhorwitz/Academic-project-page-template" target="_blank">academic project page template</a>.
+        </p>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Adjust script path/name to match the template if it has JS -->
+  <!-- <script src="main.js"></script> -->
+</body>
+</html>
